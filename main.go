@@ -26,7 +26,8 @@ func (s *User) end_session() error {
 	return s.conn.Close()
 }
 
-func user_session(user User, server Server) {
+func (server *Server) session_user(user User) {
+
 	buff := make([]byte, 1024)
 	for {
 		n, err := user.conn.Read(buff)
@@ -36,7 +37,7 @@ func user_session(user User, server Server) {
 			}
 			continue
 		}
-		log.Printf("%s", buff[:n])
+		log.Printf("%s sent %s", user.name, buff[:n])
 		message := Message{
 			content: fmt.Sprintf("\n[%s]: %s", user.name, buff[:n]),
 			user:    user,
@@ -46,21 +47,7 @@ func user_session(user User, server Server) {
 
 }
 
-func main() {
-	const (
-		SERVER_NAME = "Olympus"
-		IP          = "127.0.0.1"
-		PORT        = "1337"
-	)
-	server := chat_server(SERVER_NAME, IP, PORT)
-	err := server.open()
-	defer server.teardown()
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_ = make(chan struct{})
+func start_server(server Server) {
 	for {
 		conn, _ := server.listener.Accept()
 		username := server.get_random_username()
@@ -70,8 +57,47 @@ func main() {
 			conn: conn,
 		}
 		server.register_user(user)
-		go user_session(user, server)
+		go server.session_user(user)
 	}
+}
+
+func main() {
+	const (
+		SERVER_NAME = "Olympus"
+		IP          = "127.0.0.1"
+		PORT        = "1337"
+	)
+	server := chat_server(SERVER_NAME, IP, PORT)
+	_ = server.open()
+	defer func() {
+		err := server.teardown()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+	_ = make(chan struct{})
+	go func(server *Server) {
+		for {
+			conn, _ := server.listener.Accept()
+			username := server.get_random_username()
+			log.Printf("%s connected to %s", username, server.name)
+			user := User{
+				name: username,
+				conn: conn,
+			}
+			server.register_user(user)
+			go server.session_user(user)
+		}
+	}(&server)
+
+	for {
+		var console_buff string
+		fmt.Scanln(&console_buff)
+		if console_buff == "FIN" {
+			break
+		}
+	}
+
 }
 
 type Message struct {
@@ -95,11 +121,13 @@ type Server struct {
 	users    []User
 }
 
-func (self *Server) teardown() {
+func (self *Server) teardown() error {
 	for _, user := range self.users {
 		user.send(TEARDOWN_NOTICE + "\n")
-		user.end_session()
+		// TODO fix this
+		user.conn.Close()
 	}
+	return self.listener.Close()
 }
 
 func (self Server) get_random_username() string {
